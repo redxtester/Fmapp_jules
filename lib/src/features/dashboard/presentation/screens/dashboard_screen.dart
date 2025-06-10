@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:fmapp/src/features/auth/presentation/state/auth_controller.dart'; // For logout
+import 'package:fmapp/src/features/auth/presentation/state/auth_controller.dart';
+// import 'package:fmapp/src/features/sim_cards/presentation/screens/sim_card_list_screen.dart'; // Keep if SIMs is a separate tab
+import 'package:fmapp/src/features/financial_accounts/presentation/screens/financial_account_list_screen.dart'; // Import Account List Screen
 
 class DashboardScreen extends ConsumerStatefulWidget {
   const DashboardScreen({super.key});
@@ -10,35 +12,41 @@ class DashboardScreen extends ConsumerStatefulWidget {
 }
 
 class _DashboardScreenState extends ConsumerState<DashboardScreen> {
-  int _selectedIndex = 0; // For BottomNavigationBar
+  int _selectedIndex = 0; // Default to Dashboard tab
 
-  // Placeholder pages for other main sections
-  static const List<Widget> _widgetOptions = <Widget>[
-    DashboardView(), // Actual dashboard content
-    Text('Accounts Page (Placeholder)'),
-    Text('Transactions Page (Placeholder)'),
-    Text('Loans Page (Placeholder)'),
-    Text('Settings Page (Placeholder)'),
+  // Updated widget options
+  static final List<Widget> _widgetOptions = <Widget>[
+    const DashboardView(),
+    const FinancialAccountListScreen(), // Tab 1 is now Accounts
+    // TODO: Add SimCardListScreen as its own tab or integrate elsewhere if needed
+    const Text('Transactions Page (Placeholder)'), // Tab 2
+    const Text('Loans Page (Placeholder)'), // Tab 3
+    const Text('Settings Page (Placeholder)'), // Tab 4
   ];
 
   void _onItemTapped(int index) {
     setState(() {
       _selectedIndex = index;
     });
-    // TODO: Implement actual navigation or page view update for other tabs
   }
 
   @override
   Widget build(BuildContext context) {
+    String title = "fmapp Dashboard";
+    if (_selectedIndex == 1) title = "My Accounts";
+    if (_selectedIndex == 2) title = "Transactions";
+    if (_selectedIndex == 3) title = "Loans";
+    if (_selectedIndex == 4) title = "Settings";
+    // Add other titles as other tabs are implemented
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('fmapp Dashboard'),
+        title: Text(title),
         actions: [
           IconButton(
             icon: const Icon(Icons.logout),
             onPressed: () async {
               await ref.read(authControllerProvider.notifier).signOut();
-              // AuthGate will handle navigation to LoginScreen
             },
           )
         ],
@@ -64,7 +72,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
             label: 'Transactions',
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.people_alt_outlined), // Or specific loan icon
+            icon: Icon(Icons.people_alt_outlined),
             activeIcon: Icon(Icons.people_alt),
             label: 'Loans',
           ),
@@ -75,24 +83,22 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
           ),
         ],
         currentIndex: _selectedIndex,
-        selectedItemColor: Theme.of(context).primaryColor, // Use theme color
+        selectedItemColor: Theme.of(context).primaryColor,
         unselectedItemColor: Colors.grey[600],
-        showUnselectedLabels: true, // Good for discoverability
-        type: BottomNavigationBarType.fixed, // Fixed when more than 3 items
+        showUnselectedLabels: true,
+        type: BottomNavigationBarType.fixed,
         onTap: _onItemTapped,
       ),
     );
   }
 }
 
+// DashboardView remains the same for now
 class DashboardView extends StatelessWidget {
   const DashboardView({super.key});
 
   @override
   Widget build(BuildContext context) {
-    // This will be built out further in subsequent steps
-    // For now, a simple placeholder message.
-    // PRD 4.6.1: total balance per SIM, recent transactions, outstanding loans/debts
     return ListView(
       padding: const EdgeInsets.all(16.0),
       children: [
@@ -101,7 +107,6 @@ class DashboardView extends StatelessWidget {
           style: Theme.of(context).textTheme.headlineSmall,
         ),
         const SizedBox(height: 20),
-        // Placeholder cards for dashboard items
         Card(
           elevation: 2,
           child: Padding(
@@ -109,11 +114,10 @@ class DashboardView extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('SIM Balances Summary', style: Theme.of(context).textTheme.titleLarge),
+                Text('Financial Overview (Placeholder)', style: Theme.of(context).textTheme.titleLarge),
                 const SizedBox(height: 8),
-                const Text('SIM 1 (Ethio): ETB 1,234.56'),
-                const Text('SIM 2 (Safaricom): ETB 789.00'),
-                // Data will come from providers later
+                const Text('Total Balance: ETB X,XXX.XX'),
+                const Text('Cash: ETB Y,YYY.YY'),
               ],
             ),
           ),
@@ -126,11 +130,10 @@ class DashboardView extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Recent Transactions', style: Theme.of(context).textTheme.titleLarge),
+                Text('Recent Transactions (Placeholder)', style: Theme.of(context).textTheme.titleLarge),
                 const SizedBox(height: 8),
-                const ListTile(leading: Icon(Icons.arrow_downward, color: Colors.red), title: Text('Netflix Subscription'), trailing: Text('- ETB 350.00')),
-                const ListTile(leading: Icon(Icons.arrow_upward, color: Colors.green), title: Text('Salary Deposit'), trailing: Text('+ ETB 15,000.00')),
-                // Data will come from providers later
+                const ListTile(leading: Icon(Icons.arrow_downward, color: Colors.red), title: Text('Groceries'), trailing: Text('- ETB 500.00')),
+                const ListTile(leading: Icon(Icons.arrow_upward, color: Colors.green), title: Text('Freelance Payment'), trailing: Text('+ ETB 2,500.00')),
               ],
             ),
           ),
@@ -143,11 +146,10 @@ class DashboardView extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Loan Summary', style: Theme.of(context).textTheme.titleLarge),
+                Text('Loan Summary (Placeholder)', style: Theme.of(context).textTheme.titleLarge),
                 const SizedBox(height: 8),
-                const Text('Total Lent: ETB 500.00'),
-                const Text('Total Owed: ETB 250.00'),
-                // Data will come from providers later
+                const Text('Total Lent: ETB ZZZ.ZZ'),
+                const Text('Total Owed: ETB WWW.WW'),
               ],
             ),
           ),

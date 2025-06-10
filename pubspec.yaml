@@ -29,6 +29,9 @@ dependencies:
   # Internationalization (will be needed for ETB currency, dates etc.)
   intl: ^0.19.0
 
+  # UUID generation
+  uuid: ^4.4.0 # Check for latest version
+
 
 dev_dependencies:
   flutter_test:
