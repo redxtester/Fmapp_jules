@@ -8,13 +8,13 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fmapp/src/core/presentation/widgets/custom_text_form_field.dart';
 import 'package:intl/intl.dart'; // For date formatting
-import 'package:uuid/uuid.dart'; // For client-side ID generation if needed before repo
+// import 'package:uuid/uuid.dart'; // Not strictly needed here as repo handles ID
 
 class AddTransactionScreen extends ConsumerStatefulWidget {
-  final Transaction? transaction; // Null if adding, populated if editing (editing not in this P0 step)
-  final String? initialAccountId; // Optional pre-selected account
+  final Transaction? transactionToEdit; // Renamed for clarity
+  final String? initialAccountId;
 
-  const AddTransactionScreen({super.key, this.transaction, this.initialAccountId});
+  const AddTransactionScreen({super.key, this.transactionToEdit, this.initialAccountId});
 
   @override
   ConsumerState<AddTransactionScreen> createState() => _AddTransactionScreenState();
@@ -32,144 +32,144 @@ class _AddTransactionScreenState extends ConsumerState<AddTransactionScreen> {
   late TextEditingController _referenceController;
 
   TransactionType _selectedTransactionType = TransactionType.expenseDebit;
-  String? _selectedAccountId; // Supabase ID of the FinancialAccount
+  String? _selectedAffectedAccountId; // Source account for transfers
   DateTime _selectedDate = DateTime.now();
 
-  bool get _isEditing => widget.transaction != null; // Not used in P0
+  // New state for internal transfers
+  bool _isInternalTransfer = false;
+  String? _selectedCounterpartyAccountId; // Destination account for transfers
+
+  bool get _isEditing => widget.transactionToEdit != null;
 
   @override
   void initState() {
     super.initState();
-    // Initialize controllers, prefill if editing (not for P0)
-    _amountController = TextEditingController(text: widget.transaction?.amount.toStringAsFixed(2) ?? '');
-    _descriptionController = TextEditingController(text: widget.transaction?.descriptionNotes ?? '');
-    _categoryController = TextEditingController(text: widget.transaction?.categoryTag ?? '');
-    _payerSenderController = TextEditingController(text: widget.transaction?.payerSenderRaw ?? '');
-    _payeeReceiverController = TextEditingController(text: widget.transaction?.payeeReceiverRaw ?? '');
-    _referenceController = TextEditingController(text: widget.transaction?.referenceNumber ?? '');
+    final tx = widget.transactionToEdit;
 
-    _selectedTransactionType = widget.transaction?.transactionType ?? TransactionType.expenseDebit;
-    _selectedDate = widget.transaction?.transactionDate ?? DateTime.now();
+    _amountController = TextEditingController(text: tx?.amount.toStringAsFixed(2) ?? '');
+    _descriptionController = TextEditingController(text: tx?.descriptionNotes ?? '');
+    _categoryController = TextEditingController(text: tx?.categoryTag ?? '');
+    _payerSenderController = TextEditingController(text: tx?.payerSenderRaw ?? '');
+    _payeeReceiverController = TextEditingController(text: tx?.payeeReceiverRaw ?? '');
+    _referenceController = TextEditingController(text: tx?.referenceNumber ?? '');
+
+    _selectedTransactionType = tx?.transactionType ?? TransactionType.expenseDebit;
+    _selectedDate = tx?.transactionDate ?? DateTime.now();
     _dateController = TextEditingController(text: DateFormat('yyyy-MM-dd').format(_selectedDate));
 
-    _selectedAccountId = widget.transaction?.affectedAccountId ?? widget.initialAccountId;
+    _selectedAffectedAccountId = tx?.affectedAccountId ?? widget.initialAccountId;
+    _isInternalTransfer = tx?.isInternalTransfer ?? false;
+    _selectedCounterpartyAccountId = tx?.counterpartyAccountId;
 
-    // If initialAccountId is provided and no account is selected yet, try to validate it
-    // by checking against available accounts.
-    // This is important if navigating from a specific account's view.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final accounts = ref.read(financialAccountsStreamProvider(false)).value ?? [];
       if (widget.initialAccountId != null && accounts.any((acc) => acc.supabaseId == widget.initialAccountId)) {
-        if (_selectedAccountId == null) { // only set if not already set (e.g. by editing mode)
-             setState(() {
-                _selectedAccountId = widget.initialAccountId;
-             });
+        if (_selectedAffectedAccountId == null) {
+             setState(() => _selectedAffectedAccountId = widget.initialAccountId);
         }
-      } else if (accounts.isNotEmpty && _selectedAccountId == null) {
-        // Default to first account if no initial account is provided or valid
-        // setState(() {
-        //   _selectedAccountId = accounts.first.supabaseId;
-        // });
+      }
+      // Ensure counterparty account is valid if editing an internal transfer
+      if (_isEditing && _isInternalTransfer && _selectedCounterpartyAccountId != null) {
+          if (!accounts.any((acc) => acc.supabaseId == _selectedCounterpartyAccountId)) {
+              _selectedCounterpartyAccountId = null; // Reset if not found (e.g. account deleted)
+          }
       }
     });
   }
 
   @override
   void dispose() {
-    _amountController.dispose();
-    _dateController.dispose();
-    _descriptionController.dispose();
-    _categoryController.dispose();
-    _payerSenderController.dispose();
-    _payeeReceiverController.dispose();
+    _amountController.dispose(); _dateController.dispose(); _descriptionController.dispose();
+    _categoryController.dispose(); _payerSenderController.dispose(); _payeeReceiverController.dispose();
     _referenceController.dispose();
     super.dispose();
   }
 
   Future<void> _selectDate(BuildContext context) async {
     final DateTime? picked = await showDatePicker(
-      context: context,
-      initialDate: _selectedDate,
-      firstDate: DateTime(2000),
-      lastDate: DateTime.now().add(const Duration(days: 365)), // Allow future for scheduled? PRD not specific.
+      context: context, initialDate: _selectedDate,
+      firstDate: DateTime(2000), lastDate: DateTime.now().add(const Duration(days: 365)),
     );
     if (picked != null && picked != _selectedDate) {
-      setState(() {
-        _selectedDate = picked;
-        _dateController.text = DateFormat('yyyy-MM-dd').format(_selectedDate);
-      });
+      setState(() { _selectedDate = picked; _dateController.text = DateFormat('yyyy-MM-dd').format(_selectedDate); });
     }
   }
 
   Future<void> _saveTransaction() async {
-    if (_formKey.currentState!.validate()) {
-      final currentUserId = ref.read(authControllerProvider).value?.id;
-      if (currentUserId == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Error: User not authenticated.')),
-        );
+    if (!_formKey.currentState!.validate()) return;
+
+    final currentUserId = ref.read(authControllerProvider).value?.id;
+    if (currentUserId == null) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Error: User not authenticated.')));
         return;
-      }
-      if (_selectedAccountId == null) {
-         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Please select an account.')),
-        );
+    }
+    if (_selectedAffectedAccountId == null) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select an affected account.')));
         return;
+    }
+    if (_isInternalTransfer && _selectedCounterpartyAccountId == null) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select a destination account for the transfer.')));
+        return;
+    }
+    if (_isInternalTransfer && _selectedAffectedAccountId == _selectedCounterpartyAccountId) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Source and destination accounts cannot be the same for a transfer.')));
+        return;
+    }
+
+
+    final now = DateTime.now();
+    final amount = double.tryParse(_amountController.text.trim()) ?? 0.0;
+
+    final transactionTypeForRecord = _isInternalTransfer ? TransactionType.expenseDebit : _selectedTransactionType;
+
+
+    final transactionData = Transaction(
+      userId: currentUserId,
+      affectedAccountId: _selectedAffectedAccountId!,
+      transactionDate: _selectedDate,
+      amount: amount,
+      transactionType: transactionTypeForRecord,
+      currency: 'ETB',
+      descriptionNotes: _descriptionController.text.trim().isNotEmpty ? _descriptionController.text.trim() : null,
+      categoryTag: _isInternalTransfer ? "Internal Transfer" : (_categoryController.text.trim().isNotEmpty ? _categoryController.text.trim() : null),
+      payerSenderRaw: _isInternalTransfer ? "Self" : (_payerSenderController.text.trim().isNotEmpty ? _payerSenderController.text.trim() : null),
+      payeeReceiverRaw: _isInternalTransfer ? "Self" : (_payeeReceiverController.text.trim().isNotEmpty ? _payeeReceiverController.text.trim() : null),
+      referenceNumber: _referenceController.text.trim().isNotEmpty ? _referenceController.text.trim() : null,
+      isInternalTransfer: _isInternalTransfer,
+      counterpartyAccountId: _isInternalTransfer ? _selectedCounterpartyAccountId : null,
+      createdAt: _isEditing ? widget.transactionToEdit!.createdAt : now,
+      updatedAt: now,
+      supabaseId: _isEditing ? widget.transactionToEdit!.supabaseId : null,
+    );
+
+    try {
+      final notifier = ref.read(transactionControllerProvider.notifier);
+      String successMessage;
+      if (_isEditing) {
+        // await notifier.updateTransaction(transactionData, widget.transactionToEdit!.affectedAccountId); // Pass old for balance
+        successMessage = "Transaction updated (Not implemented in P0)";
+         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(successMessage)));
+         return;
+      } else {
+        await notifier.addTransaction(transactionData);
+        successMessage = "Transaction added successfully!";
       }
-
-      final now = DateTime.now();
-      final amount = double.tryParse(_amountController.text.trim()) ?? 0.0;
-
-      final newTransaction = Transaction(
-        // isarId and supabaseId will be handled by repository/isar/supabase
-        userId: currentUserId,
-        affectedAccountId: _selectedAccountId!,
-        transactionDate: _selectedDate,
-        amount: amount,
-        transactionType: _selectedTransactionType,
-        currency: 'ETB', // Default from PRD
-        descriptionNotes: _descriptionController.text.trim().isNotEmpty ? _descriptionController.text.trim() : null,
-        categoryTag: _categoryController.text.trim().isNotEmpty ? _categoryController.text.trim() : null,
-        payerSenderRaw: _payerSenderController.text.trim().isNotEmpty ? _payerSenderController.text.trim() : null,
-        payeeReceiverRaw: _payeeReceiverController.text.trim().isNotEmpty ? _payeeReceiverController.text.trim() : null,
-        referenceNumber: _referenceController.text.trim().isNotEmpty ? _referenceController.text.trim() : null,
-        createdAt: _isEditing ? widget.transaction!.createdAt : now,
-        updatedAt: now,
-        supabaseId: _isEditing ? widget.transaction!.supabaseId : null, // Repo handles new ID
-      );
-
-      try {
-        final notifier = ref.read(transactionControllerProvider.notifier);
-        if (_isEditing) {
-          // await notifier.updateTransaction(newTransaction); // Not for P0
-        } else {
-          await notifier.addTransaction(newTransaction);
-        }
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Transaction ${_isEditing ? "updated" : "added"} successfully!')),
-          );
-          Navigator.of(context).pop();
-        }
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error saving transaction: ${e.toString()}')),
-          );
-        }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(successMessage)));
+        Navigator.of(context).pop();
       }
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: ${e.toString()}')));
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final isLoading = ref.watch(transactionControllerProvider).isLoading;
-    final accountsAsyncValue = ref.watch(financialAccountsStreamProvider(false)); // Only active accounts
+    final accountsAsyncValue = ref.watch(financialAccountsStreamProvider(false));
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text(_isEditing ? 'Edit Transaction' : 'Add New Transaction'),
-      ),
+      appBar: AppBar(title: Text(_isEditing ? 'Edit Transaction' : 'Add Transaction')),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
         child: Form(
@@ -177,135 +177,107 @@ class _AddTransactionScreenState extends ConsumerState<AddTransactionScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
-              // Account Selector
+              SwitchListTile(
+                title: const Text('Internal Transfer?'),
+                value: _isInternalTransfer,
+                onChanged: (bool value) {
+                  setState(() {
+                    _isInternalTransfer = value;
+                    if (!value) _selectedCounterpartyAccountId = null;
+                  });
+                },
+                secondary: const Icon(Icons.compare_arrows_outlined),
+              ),
+              const SizedBox(height: 8),
+
               accountsAsyncValue.when(
                 data: (accounts) {
-                  if (accounts.isEmpty) {
-                    return const Center(child: Text("No financial accounts available. Please add an account first."));
-                  }
-                  // Ensure _selectedAccountId is valid or nullify if not in list
-                  if (_selectedAccountId != null && !accounts.any((acc) => acc.supabaseId == _selectedAccountId)) {
-                      _selectedAccountId = null;
+                  if (accounts.isEmpty) return const Center(child: Text("No accounts. Add one first."));
+
+                  if (_selectedAffectedAccountId != null && !accounts.any((acc) => acc.supabaseId == _selectedAffectedAccountId)) {
+                      _selectedAffectedAccountId = null;
                   }
 
                   return DropdownButtonFormField<String?>(
-                    value: _selectedAccountId,
+                    value: _selectedAffectedAccountId,
                     decoration: InputDecoration(
-                      labelText: 'Affected Account*',
+                      labelText: _isInternalTransfer ? 'From Account*' : 'Affected Account*',
                       prefixIcon: Icon(Icons.account_balance_wallet_outlined),
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(8.0)),
                       filled: true, fillColor: Colors.white,
                     ),
                     hint: const Text('Select Account'),
                     isExpanded: true,
-                    items: accounts.map((FinancialAccount acc) {
-                      return DropdownMenuItem<String?>(
-                        value: acc.supabaseId,
-                        child: Text('${acc.accountName} (${acc.accountType.name})'),
-                      );
-                    }).toList(),
-                    onChanged: (String? newValue) {
-                      setState(() {
-                        _selectedAccountId = newValue;
-                      });
-                    },
-                    validator: (value) => value == null ? 'Please select an account' : null,
+                    items: accounts.map((acc) => DropdownMenuItem<String?>(value: acc.supabaseId, child: Text(acc.accountName))).toList(),
+                    onChanged: (val) => setState(() => _selectedAffectedAccountId = val),
+                    validator: (val) => val == null ? 'Required' : null,
                   );
                 },
                 loading: () => const Text("Loading accounts..."),
-                error: (err, stack) => Text('Error loading accounts: $err'),
+                error: (e,s) => Text('Error accounts: $e'),
               ),
               const SizedBox(height: 8),
 
-              // Transaction Type Selector
-              DropdownButtonFormField<TransactionType>(
-                value: _selectedTransactionType,
-                decoration: InputDecoration(
-                  labelText: 'Transaction Type*',
-                  prefixIcon: Icon(Icons.swap_vert_circle_outlined),
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8.0)),
-                  filled: true, fillColor: Colors.white,
+              if (_isInternalTransfer)
+                accountsAsyncValue.when(
+                  data: (accounts) {
+                    if (accounts.isEmpty) return const SizedBox.shrink();
+                    final destinationOptions = accounts.where((acc) => acc.supabaseId != _selectedAffectedAccountId).toList();
+
+                    if (_selectedCounterpartyAccountId != null && !destinationOptions.any((acc) => acc.supabaseId == _selectedCounterpartyAccountId)) {
+                        _selectedCounterpartyAccountId = null;
+                    }
+
+                    return DropdownButtonFormField<String?>(
+                      value: _selectedCounterpartyAccountId,
+                      decoration: InputDecoration(
+                        labelText: 'To Account*',
+                        prefixIcon: Icon(Icons.arrow_forward_outlined),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8.0)),
+                        filled: true, fillColor: Colors.white,
+                      ),
+                      hint: const Text('Select Destination Account'),
+                      isExpanded: true,
+                      items: destinationOptions.map((acc) => DropdownMenuItem<String?>(value: acc.supabaseId, child: Text(acc.accountName))).toList(),
+                      onChanged: (val) => setState(() => _selectedCounterpartyAccountId = val),
+                      validator: (val) => _isInternalTransfer && val == null ? 'Destination account required' : null,
+                    );
+                  },
+                  loading: () => const SizedBox.shrink(),
+                  error: (e,s) => const SizedBox.shrink(),
                 ),
-                items: TransactionType.values.map((TransactionType type) {
-                  return DropdownMenuItem<TransactionType>(
-                    value: type,
-                    child: Text(type.displayName),
-                  );
-                }).toList(),
-                onChanged: (TransactionType? newValue) {
-                  if (newValue != null) {
-                    setState(() {
-                      _selectedTransactionType = newValue;
-                    });
-                  }
-                },
-                 validator: (value) => value == null ? 'Transaction type is required' : null,
-              ),
-              const SizedBox(height: 8),
+              if (_isInternalTransfer) const SizedBox(height: 8),
 
-              CustomTextFormField(
-                controller: _amountController,
-                labelText: 'Amount*',
-                hintText: '0.00',
-                prefixIcon: Icons.monetization_on_outlined,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}'))],
-                validator: (value) {
-                  if (value == null || value.isEmpty) return 'Amount is required';
-                  final double? amount = double.tryParse(value);
-                  if (amount == null) return 'Enter a valid number';
-                  if (amount <= 0) return 'Amount must be greater than zero';
-                  return null;
-                },
-              ),
-              CustomTextFormField(
-                controller: _dateController,
-                labelText: 'Transaction Date*',
-                hintText: 'Select Date',
-                prefixIcon: Icons.calendar_today_outlined,
-                readOnly: true,
-                onTap: () => _selectDate(context),
-                validator: (value) => (value == null || value.isEmpty) ? 'Date is required' : null,
-              ),
-              CustomTextFormField(
-                controller: _descriptionController,
-                labelText: 'Description/Notes',
-                hintText: 'e.g., Groceries, Salary for May',
-                prefixIcon: Icons.description_outlined,
-                maxLines: 2,
-              ),
-              CustomTextFormField(
-                controller: _categoryController,
-                labelText: 'Category/Tag (Optional)',
-                hintText: 'e.g., Food, Transport, Income',
-                prefixIcon: Icons.label_outline,
-              ),
-              CustomTextFormField(
-                controller: _payerSenderController,
-                labelText: 'Payer/Sender (Optional)',
-                hintText: 'e.g., John Doe, Company XYZ',
-                prefixIcon: Icons.person_pin_circle_outlined,
-              ),
-              CustomTextFormField(
-                controller: _payeeReceiverController,
-                labelText: 'Payee/Receiver (Optional)',
-                hintText: 'e.g., Supermarket, Client A',
-                prefixIcon: Icons.storefront_outlined,
-              ),
-              CustomTextFormField(
-                controller: _referenceController,
-                labelText: 'Reference Number (Optional)',
-                hintText: 'e.g., Invoice #123, Order ID',
-                prefixIcon: Icons.receipt_long_outlined,
-              ),
+              if (!_isInternalTransfer)
+                DropdownButtonFormField<TransactionType>(
+                  value: _selectedTransactionType,
+                  decoration: InputDecoration(
+                    labelText: 'Transaction Type*',
+                    prefixIcon: Icon(Icons.swap_vert_circle_outlined),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8.0)),
+                    filled: true, fillColor: Colors.white,
+                  ),
+                  items: TransactionType.values.map((type) => DropdownMenuItem<TransactionType>(value: type, child: Text(type.displayName))).toList(),
+                  onChanged: (val) => setState(() => _selectedTransactionType = val!),
+                  validator: (val) => !_isInternalTransfer && val == null ? 'Type required' : null,
+                ),
+              if (!_isInternalTransfer) const SizedBox(height: 8),
+
+              CustomTextFormField(controller: _amountController, labelText: 'Amount*', keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}'))], prefixIcon: Icons.monetization_on_outlined, validator: (v){ if(v==null||v.isEmpty)return 'Amount Required'; final d=double.tryParse(v); if(d==null)return 'Invalid Number'; if(d<=0)return 'Must be > 0'; return null;}),
+              CustomTextFormField(controller: _dateController, labelText: 'Transaction Date*', readOnly: true, onTap: () => _selectDate(context), prefixIcon: Icons.calendar_today_outlined, validator: (v) => (v==null||v.isEmpty)?'Date Required':null),
+              CustomTextFormField(controller: _descriptionController, labelText: 'Description/Notes', maxLines: 2, prefixIcon: Icons.description_outlined),
+
+              if (!_isInternalTransfer)
+                CustomTextFormField(controller: _categoryController, labelText: 'Category (Optional)', prefixIcon: Icons.label_outline),
+
+              if (!_isInternalTransfer)
+                CustomTextFormField(controller: _payerSenderController, labelText: 'Payer/Sender (Optional)', prefixIcon: Icons.person_pin_circle_outlined),
+              if (!_isInternalTransfer)
+                CustomTextFormField(controller: _payeeReceiverController, labelText: 'Payee/Receiver (Optional)', prefixIcon: Icons.storefront_outlined),
+
+              CustomTextFormField(controller: _referenceController, labelText: 'Reference Number (Optional)', prefixIcon: Icons.receipt_long_outlined),
               const SizedBox(height: 24),
-              isLoading
-                  ? const Center(child: CircularProgressIndicator())
-                  : ElevatedButton.icon(
-                      icon: Icon(_isEditing ? Icons.save_alt : Icons.add_circle_outline),
-                      onPressed: _saveTransaction,
-                      label: Text(_isEditing ? 'Save Changes' : 'Add Transaction'),
-                    ),
+              isLoading ? const Center(child: CircularProgressIndicator()) : ElevatedButton.icon(icon: Icon(_isEditing ? Icons.save_alt : Icons.add_circle_outline), onPressed: _saveTransaction, label: Text(_isEditing ? 'Save Changes' : 'Add Transaction')),
             ],
           ),
         ),

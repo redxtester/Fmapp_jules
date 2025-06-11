@@ -4,15 +4,15 @@ import 'package:isar/isar.dart';
 part 'transaction.g.dart'; // Isar generator will create this file
 
 enum TransactionType {
-  incomeCredit, // PRD: "Income/Credit"
-  expenseDebit, // PRD: "Expense/Debit"
+  incomeCredit,
+  expenseDebit,
 }
 
 extension TransactionTypeExtension on TransactionType {
   String toJson() => name;
   static TransactionType fromJson(String json) {
     return TransactionType.values.firstWhere((e) => e.name == json,
-                orElse: () => TransactionType.expenseDebit); // Default or throw
+                orElse: () => TransactionType.expenseDebit);
   }
   String get displayName {
     switch (this) {
@@ -34,7 +34,7 @@ class Transaction extends Equatable {
   final String userId;
 
   @Index(unique: false, replace: false)
-  final String affectedAccountId; // Supabase ID of the FinancialAccount
+  final String affectedAccountId; // Source account for transfers
 
   final DateTime transactionDate;
   final double amount;
@@ -42,13 +42,18 @@ class Transaction extends Equatable {
   @Enumerated(EnumType.name)
   final TransactionType transactionType;
 
-  final String currency; // Default ETB
+  final String currency;
 
   final String? descriptionNotes;
   final String? categoryTag;
   final String? payerSenderRaw;
   final String? payeeReceiverRaw;
   final String? referenceNumber;
+
+  // New fields for Internal Transfer (PRD 4.4)
+  final bool isInternalTransfer;
+  @Index(unique: false, replace: false)
+  final String? counterpartyAccountId; // Destination account for transfers (Supabase ID)
 
   final DateTime createdAt;
   final DateTime updatedAt;
@@ -69,16 +74,20 @@ class Transaction extends Equatable {
     this.payerSenderRaw,
     this.payeeReceiverRaw,
     this.referenceNumber,
+    this.isInternalTransfer = false,
+    this.counterpartyAccountId,
     required this.createdAt,
     required this.updatedAt,
     this.supabaseId,
-  });
+  }) : assert(isInternalTransfer ? counterpartyAccountId != null && affectedAccountId != counterpartyAccountId : true,
+             'counterpartyAccountId must be provided and different from affectedAccountId for internal transfers.');
 
   @override
   List<Object?> get props => [
         isarId, userId, affectedAccountId, transactionDate, amount, transactionType,
         currency, descriptionNotes, categoryTag, payerSenderRaw, payeeReceiverRaw,
-        referenceNumber, createdAt, updatedAt, supabaseId,
+        referenceNumber, isInternalTransfer, counterpartyAccountId,
+        createdAt, updatedAt, supabaseId,
       ];
 
   factory Transaction.fromMap(Map<String, dynamic> map) {
@@ -94,6 +103,8 @@ class Transaction extends Equatable {
       payerSenderRaw: map['payer_sender_raw'] as String?,
       payeeReceiverRaw: map['payee_receiver_raw'] as String?,
       referenceNumber: map['reference_number'] as String?,
+      isInternalTransfer: map['is_internal_transfer'] as bool? ?? false,
+      counterpartyAccountId: map['counterparty_account_id'] as String?,
       createdAt: DateTime.parse(map['created_at'] as String),
       updatedAt: DateTime.parse(map['updated_at'] as String),
       supabaseId: map['id'] as String,
@@ -114,6 +125,8 @@ class Transaction extends Equatable {
       'payer_sender_raw': payerSenderRaw,
       'payee_receiver_raw': payeeReceiverRaw,
       'reference_number': referenceNumber,
+      'is_internal_transfer': isInternalTransfer,
+      'counterparty_account_id': counterpartyAccountId,
     };
   }
 
@@ -130,6 +143,8 @@ class Transaction extends Equatable {
     String? payerSenderRaw,
     String? payeeReceiverRaw,
     String? referenceNumber,
+    bool? isInternalTransfer,
+    String? counterpartyAccountId,
     DateTime? createdAt,
     DateTime? updatedAt,
     String? supabaseId,
@@ -138,6 +153,7 @@ class Transaction extends Equatable {
     bool setPayerNull = false,
     bool setPayeeNull = false,
     bool setRefNull = false,
+    bool setCounterpartyAccountIdNull = false,
     bool setSupabaseIdNull = false,
   }) {
     return Transaction(
@@ -153,6 +169,8 @@ class Transaction extends Equatable {
       payerSenderRaw: setPayerNull ? null : (payerSenderRaw ?? this.payerSenderRaw),
       payeeReceiverRaw: setPayeeNull ? null : (payeeReceiverRaw ?? this.payeeReceiverRaw),
       referenceNumber: setRefNull ? null : (referenceNumber ?? this.referenceNumber),
+      isInternalTransfer: isInternalTransfer ?? this.isInternalTransfer,
+      counterpartyAccountId: setCounterpartyAccountIdNull ? null : (counterpartyAccountId ?? this.counterpartyAccountId),
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       supabaseId: setSupabaseIdNull ? null : (supabaseId ?? this.supabaseId),

@@ -1,12 +1,13 @@
 import 'package:fmapp/src/features/financial_accounts/data/models/financial_account.dart';
 import 'package:fmapp/src/features/financial_accounts/presentation/screens/add_edit_financial_account_screen.dart';
 import 'package:fmapp/src/features/financial_accounts/presentation/state/financial_account_controller.dart';
+import 'package:fmapp/src/features/transactions/presentation/screens/transaction_list_screen.dart';
+import 'package:fmapp/src/features/transactions/presentation/state/transaction_controller.dart'; // For currentBalanceProvider
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fmapp/src/core/presentation/widgets/loading_indicator.dart';
-import 'package:intl/intl.dart'; // For currency formatting
+import 'package:intl/intl.dart';
 
-// Provider to control the filter for showing archived accounts
 final showArchivedAccountsProvider = StateProvider<bool>((ref) => false);
 
 class FinancialAccountListScreen extends ConsumerWidget {
@@ -15,15 +16,10 @@ class FinancialAccountListScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final bool includeArchived = ref.watch(showArchivedAccountsProvider);
-    // Use the stream provider with the family parameter
     final accountsAsyncValue = ref.watch(financialAccountsStreamProvider(includeArchived));
-    final currencyFormat = NumberFormat.currency(locale: 'en_US', symbol: 'ETB '); // Basic ETB format
+    final currencyFormat = NumberFormat.currency(locale: 'en_US', symbol: 'ETB ');
 
     return Scaffold(
-      // AppBar will be part of DashboardScreen usually, but can have one here if this screen is pushed standalone
-      // For tab view, AppBar is typically managed by the parent (DashboardScreen)
-      // For now, let's assume it might be pushed, so it has its own app bar.
-      // If it's always a tab, this AppBar might be redundant or handled differently.
       appBar: AppBar(
         title: Text(includeArchived ? 'All Accounts' : 'Active Accounts'),
         actions: [
@@ -35,35 +31,23 @@ class FinancialAccountListScreen extends ConsumerWidget {
           IconButton(
             icon: const Icon(Icons.sync),
             onPressed: () async {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Syncing accounts...')),
-              );
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Syncing accounts...')));
               try {
                 await ref.read(financialAccountControllerProvider.notifier).syncFinancialAccounts();
                 if (context.mounted) {
                     ScaffoldMessenger.of(context).hideCurrentSnackBar();
-                    ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Accounts synced successfully!')),
-                    );
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Accounts synced!')));
                 }
-              } catch (e) {
-                 if (context.mounted) {
+              } catch (e) { if (context.mounted) {
                     ScaffoldMessenger.of(context).hideCurrentSnackBar();
-                    ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Error syncing accounts: $e')),
-                    );
-                 }
-              }
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Sync error: $e')));
+              }}
             },
             tooltip: 'Sync with Cloud',
           ),
           IconButton(
             icon: const Icon(Icons.add_circle_outline),
-            onPressed: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(builder: (context) => const AddEditFinancialAccountScreen()),
-              );
-            },
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (context) => const AddEditFinancialAccountScreen())),
             tooltip: 'Add New Account',
           ),
         ],
@@ -75,9 +59,9 @@ class FinancialAccountListScreen extends ConsumerWidget {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.account_balance_wallet_outlined, size: 60, color: Colors.grey),
+                  const Icon(Icons.account_balance_wallet_outlined, size: 60, color: Colors.grey),
                   const SizedBox(height: 16),
-                  Text(includeArchived ? 'No accounts found.' : 'No active accounts found.', style: TextStyle(fontSize: 18)),
+                  Text(includeArchived ? 'No accounts found.' : 'No active accounts found.', style: const TextStyle(fontSize: 18)),
                   const SizedBox(height: 8),
                   const Text('Tap the "+" icon to add your first financial account.', textAlign: TextAlign.center),
                    const SizedBox(height: 20),
@@ -94,18 +78,14 @@ class FinancialAccountListScreen extends ConsumerWidget {
               ),
             );
           }
-          // Group accounts by type for better display (optional)
-          // Map<AccountType, List<FinancialAccount>> groupedAccounts = {};
-          // for (var acc in accounts) {
-          //   (groupedAccounts[acc.accountType] ??= []).add(acc);
-          // }
-
           return ListView.builder(
             itemCount: accounts.length,
             itemBuilder: (context, index) {
               final account = accounts[index];
-              // TODO: Implement currentBalance calculation later when transactions exist
-              final currentBalanceDisplay = account.initialBalance; // Placeholder
+              // Watch the current balance for this specific account
+              final currentBalance = account.supabaseId != null
+                  ? ref.watch(currentBalanceProvider(account.supabaseId!))
+                  : account.initialBalance; // Fallback if no supabaseId (should not happen for synced accounts)
 
               return Card(
                 margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -117,12 +97,24 @@ class FinancialAccountListScreen extends ConsumerWidget {
                   ),
                   title: Text(account.accountName, style: const TextStyle(fontWeight: FontWeight.bold)),
                   subtitle: Text(
-                    '${account.accountIdentifier ?? account.accountType.name}\nInitial: ${currencyFormat.format(account.initialBalance)} \nCurrent: ${currencyFormat.format(currentBalanceDisplay)}'
+                    '${account.accountIdentifier ?? account.accountType.name}\nInitial: ${currencyFormat.format(account.initialBalance)}\nCurrent: ${currencyFormat.format(currentBalance)}'
                   ),
                   isThreeLine: true,
+                  onTap: () {
+                    if (account.supabaseId != null) {
+                      Navigator.of(context).push(MaterialPageRoute(builder: (context) => TransactionListScreen(
+                        accountId: account.supabaseId!,
+                        accountName: account.accountName,
+                      )));
+                    } else {
+                       ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Cannot view transactions: Account not synced.')),
+                      );
+                    }
+                  },
                   trailing: PopupMenuButton<String>(
                     onSelected: (value) async {
-                      if (value == 'edit') {
+                        if (value == 'edit') {
                         Navigator.of(context).push(
                           MaterialPageRoute(builder: (context) => AddEditFinancialAccountScreen(account: account)),
                         );
@@ -141,45 +133,23 @@ class FinancialAccountListScreen extends ConsumerWidget {
                                 );
                             }
                          }
-                      } else if (value == 'delete') {
-                        final confirm = await showDialog<bool>(
-                          context: context,
-                          builder: (ctx) => AlertDialog(
-                            title: const Text('Confirm Delete'),
-                            content: Text('Are you sure you want to delete account "${account.accountName}"? This may affect associated transactions (not yet implemented).'),
-                            actions: [
-                              TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
-                              TextButton(
-                                onPressed: () => Navigator.of(ctx).pop(true),
-                                child: const Text('Delete', style: TextStyle(color: Colors.red)),
-                              ),
-                            ],
-                          ),
-                        );
-                        if (confirm == true && account.supabaseId != null) {
+                      } else if (value == 'delete' && account.supabaseId != null) {
                            try {
                             await ref.read(financialAccountControllerProvider.notifier).deleteFinancialAccount(account.supabaseId!, account.isarId);
-                            if(context.mounted){
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(content: Text('Account "${account.accountName}" deleted.')),
-                                );
-                            }
+                            // No need to invalidate currentBalanceProvider here for the deleted account.
+                            // The account will disappear from the list.
                            } catch(e){
-                               if(context.mounted){
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(content: Text('Error deleting account: $e')),
-                                );
+                               String errorMessage = 'Error deleting account: $e';
+                               if (e.toString().contains('violates foreign key constraint') && e.toString().contains("transactions_affected_account_id_fkey")) {
+                                   errorMessage = 'Cannot delete: Account has transactions.';
                                }
+                               if(context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(errorMessage)));
                            }
                         }
-                      }
                     },
                     itemBuilder: (context) => [
                       const PopupMenuItem(value: 'edit', child: Text('Edit')),
-                      PopupMenuItem(
-                        value: 'archive_restore',
-                        child: Text(account.isArchived ? 'Restore' : 'Archive')
-                      ),
+                      PopupMenuItem(value: 'archive_restore', child: Text(account.isArchived ? 'Restore' : 'Archive')),
                       const PopupMenuItem(value: 'delete', child: Text('Delete', style: TextStyle(color: Colors.red))),
                     ],
                   ),
@@ -223,11 +193,11 @@ class FinancialAccountListScreen extends ConsumerWidget {
   }
   Color _getAccountTypeColor(AccountType type, BuildContext context) {
     switch (type) {
-      case AccountType.bankAccount: return Colors.blue[700]!;
-      case AccountType.mobileWallet: return Colors.green[700]!;
-      case AccountType.onlineMoney: return Colors.purple[700]!;
-      case AccountType.cash: return Colors.orange[700]!;
-      default: return Theme.of(context).primaryColor;
+      case AccountType.bankAccount: return Colors.blue[600]!;
+      case AccountType.mobileWallet: return Colors.green[600]!;
+      case AccountType.onlineMoney: return Colors.purple[600]!;
+      case AccountType.cash: return Colors.orange[600]!;
+      default: return Theme.of(context).primaryColorDark;
     }
   }
 }

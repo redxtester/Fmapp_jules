@@ -1,45 +1,71 @@
 import 'dart:async';
 import 'package:fmapp/src/features/transactions/data/models/transaction.dart';
 import 'package:fmapp/src/features/transactions/data/repositories/transaction_repository.dart';
+import 'package:fmapp/src/features/financial_accounts/data/models/financial_account.dart';
+import 'package:fmapp/src/features/financial_accounts/data/repositories/financial_account_repository.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:isar/isar.dart'; // For Id type
+import 'package:isar/isar.dart';
 
-// Provider for TransactionController
-// Manages a list of transactions, perhaps for a specific account or recent transactions.
-// For a general list, it might become very large.
-// Consider if this controller should manage *all* transactions or be more specific.
-// For now, let's assume it's for general transaction operations and can fetch/refresh.
 final transactionControllerProvider =
     AsyncNotifierProvider<TransactionController, List<Transaction>>(() {
   return TransactionController();
 });
 
-// Stream provider for transactions, family by accountId (nullable for all user's transactions)
-// This is likely more useful for displaying lists of transactions.
 final transactionsStreamProvider =
     StreamProvider.autoDispose.family<List<Transaction>, String?>((ref, accountId) {
   final repository = ref.watch(transactionRepositoryProvider);
+  // The repository's watchTransactionsLocal was updated to fetch if affected or counterparty
   return repository.watchTransactionsLocal(accountId);
 });
 
-// Provider to calculate current balance for a specific account
-// This will recompute when transactions for that account change or when the account's initial balance changes.
-// It needs access to the FinancialAccount's initialBalance and its transactions.
-// This is a conceptual placement; it might live elsewhere or be part of FinancialAccountController.
-final currentBalanceProvider = Provider.autoDispose.family<double, String>((ref, accountSupabaseId) {
-  final transactions = ref.watch(transactionsStreamProvider(accountSupabaseId)).value ?? [];
-  // We need the financial account's initial balance.
-  // This requires access to FinancialAccount data. This provider might need to be more complex
-  // or this logic lives within FinancialAccount's domain.
-  // For now, placeholder:
-  final initialBalance = 0.0; // Placeholder - This needs to be fetched for the account.
+final singleFinancialAccountStreamProvider =
+    StreamProvider.autoDispose.family<FinancialAccount?, String>((ref, accountSupabaseId) {
+  final accountRepo = ref.watch(financialAccountRepositoryProvider);
+  return accountRepo.watchFinancialAccountBySupabaseIdLocal(accountSupabaseId);
+});
 
-  double currentBalance = initialBalance;
+final currentBalanceProvider = Provider.autoDispose.family<double, String>((ref, accountSupabaseId) {
+  // Watch all transactions involving this account (as source or destination for transfers)
+  final transactionsAsyncValue = ref.watch(transactionsStreamProvider(accountSupabaseId));
+  final accountAsyncValue = ref.watch(singleFinancialAccountStreamProvider(accountSupabaseId));
+
+  final account = accountAsyncValue.value;
+  final transactions = transactionsAsyncValue.value ?? [];
+
+  if (account == null) {
+    return 0.0;
+  }
+
+  double currentBalance = account.initialBalance;
+
   for (var tx in transactions) {
-    if (tx.transactionType == TransactionType.incomeCredit) {
-      currentBalance += tx.amount;
-    } else if (tx.transactionType == TransactionType.expenseDebit) {
-      currentBalance -= tx.amount;
+    // Skip transactions dated before the account was added by the user.
+    // This prevents transactions from a previous use of an account number (e.g. if re-added)
+    // from affecting a newly added account instance in the app with a later 'dateAdded'.
+    // PRD 4.2.1: initialBalance, dateAdded.
+    if (tx.transactionDate.isBefore(account.dateAdded)) {
+        // For Isar, date comparison needs to be careful with timezones if not UTC.
+        // Assuming dates are consistent (e.g. all stored as UTC or all local but consistent).
+        // For simplicity, direct comparison.
+        continue;
+    }
+
+    if (tx.isInternalTransfer) {
+      if (tx.affectedAccountId == accountSupabaseId) {
+        // This account is the SOURCE of the transfer (debit)
+        currentBalance -= tx.amount;
+      } else if (tx.counterpartyAccountId == accountSupabaseId) {
+        // This account is the DESTINATION of the transfer (credit)
+        currentBalance += tx.amount;
+      }
+    } else { // Regular income or expense
+      if (tx.affectedAccountId == accountSupabaseId) { // Ensure transaction belongs to this account
+          if (tx.transactionType == TransactionType.incomeCredit) {
+            currentBalance += tx.amount;
+          } else if (tx.transactionType == TransactionType.expenseDebit) {
+            currentBalance -= tx.amount;
+          }
+      }
     }
   }
   return currentBalance;
@@ -48,58 +74,77 @@ final currentBalanceProvider = Provider.autoDispose.family<double, String>((ref,
 
 class TransactionController extends AsyncNotifier<List<Transaction>> {
   late TransactionRepository _repository;
-  String? _currentAccountIdFilter; // Optional filter for the list this controller manages
+  String? _currentAccountIdFilter;
 
   @override
   Future<List<Transaction>> build() async {
     _repository = ref.watch(transactionRepositoryProvider);
-    // Load initial transactions, possibly filtered if _currentAccountIdFilter is set
     return _repository.getTransactionsLocal(accountIdFilter: _currentAccountIdFilter);
   }
 
   void setAccountIdFilter(String? accountId) {
     _currentAccountIdFilter = accountId;
-    _refreshState(); // Refresh the list with the new filter
+    _refreshState();
   }
 
   Future<void> addTransaction(Transaction transaction) async {
-    // Set loading state, preserving previous data
     state = AsyncLoading<List<Transaction>>().copyWithPrevious(state);
     try {
       await _repository.addTransaction(transaction);
-      // After adding, the relevant transactionsStreamProvider will update.
-      // This controller's list might also need refresh if it's showing the list where new item belongs.
       await _refreshState();
-      // TODO: Trigger recalculation of the affected account's balance.
-      // This could be done by invalidating a balance provider or calling a method on FinancialAccountController.
+      // Invalidate balance for affected account
       ref.invalidate(currentBalanceProvider(transaction.affectedAccountId));
+      // If it's an internal transfer, also invalidate for counterparty account
+      if (transaction.isInternalTransfer && transaction.counterpartyAccountId != null) {
+        ref.invalidate(currentBalanceProvider(transaction.counterpartyAccountId!));
+      }
     } catch (e, stackTrace) {
       state = AsyncError(e, stackTrace).copyWithPrevious(state);
       rethrow;
     }
   }
 
-  Future<void> updateTransaction(Transaction transaction) async {
+  Future<void> updateTransaction(Transaction transaction, String oldAffectedAccountId, String? oldCounterpartyAccountId, bool wasInternalTransfer) async {
     state = AsyncLoading<List<Transaction>>().copyWithPrevious(state);
     try {
-      // We need to know the old affected account if it changed, to update its balance too.
-      // For simplicity, this basic version assumes affectedAccountId doesn't change or only updates one.
       await _repository.updateTransaction(transaction);
       await _refreshState();
+
+      // Invalidate current affected account
       ref.invalidate(currentBalanceProvider(transaction.affectedAccountId));
-      // If affectedAccountId could change, invalidate old one too.
+      // Invalidate old affected account if it changed
+      if (oldAffectedAccountId != transaction.affectedAccountId) {
+        ref.invalidate(currentBalanceProvider(oldAffectedAccountId));
+      }
+
+      // Handle counterparty invalidation for current and previous states
+      if (transaction.isInternalTransfer && transaction.counterpartyAccountId != null) {
+        ref.invalidate(currentBalanceProvider(transaction.counterpartyAccountId!));
+      }
+      if (wasInternalTransfer && oldCounterpartyAccountId != null) {
+        // If it was a transfer and counterparty changed or it's no longer a transfer
+        if (oldCounterpartyAccountId != transaction.counterpartyAccountId || !transaction.isInternalTransfer) {
+             ref.invalidate(currentBalanceProvider(oldCounterpartyAccountId));
+        }
+      }
+
     } catch (e, stackTrace) {
       state = AsyncError(e, stackTrace).copyWithPrevious(state);
       rethrow;
     }
   }
 
-  Future<void> deleteTransaction(String supabaseId, Id isarId, String affectedAccountId) async {
+  Future<void> deleteTransaction(Transaction transactionToDelete) async {
     state = AsyncLoading<List<Transaction>>().copyWithPrevious(state);
     try {
-      await _repository.deleteTransaction(supabaseId, isarId);
+      if (transactionToDelete.supabaseId == null) throw Exception("Cannot delete unsynced transaction by this method.");
+      await _repository.deleteTransaction(transactionToDelete.supabaseId!, transactionToDelete.isarId);
       await _refreshState();
-      ref.invalidate(currentBalanceProvider(affectedAccountId));
+
+      ref.invalidate(currentBalanceProvider(transactionToDelete.affectedAccountId));
+      if (transactionToDelete.isInternalTransfer && transactionToDelete.counterpartyAccountId != null) {
+        ref.invalidate(currentBalanceProvider(transactionToDelete.counterpartyAccountId!));
+      }
     } catch (e, stackTrace) {
       state = AsyncError(e, stackTrace).copyWithPrevious(state);
       rethrow;
@@ -114,8 +159,12 @@ class TransactionController extends AsyncNotifier<List<Transaction>> {
       if (accountIdFilter != null) {
         ref.invalidate(currentBalanceProvider(accountIdFilter));
       } else {
-        // If syncing all, might need to invalidate all relevant balance providers
-        // This is complex; ideally, sync per account or have a global balance update mechanism.
+        // If syncing all, need a way to know which accounts were affected to invalidate.
+        // This is complex. For now, user might need to visit account to see updated balance,
+        // or a global "refresh all balances" event could be triggered.
+        // Or, the financialAccountsStreamProvider could be invalidated to refresh all account views.
+        // ref.invalidate(financialAccountsStreamProvider(false)); // This would cause mass rebuild
+        // ref.invalidate(financialAccountsStreamProvider(true));
       }
       print("TransactionController: Sync complete for filter '$accountIdFilter'.");
     } catch (e, stackTrace) {
@@ -125,7 +174,6 @@ class TransactionController extends AsyncNotifier<List<Transaction>> {
   }
 
   Future<void> _refreshState() async {
-    // Refreshes the list this controller holds, respecting its internal filter
     try {
       final transactions = await _repository.getTransactionsLocal(accountIdFilter: _currentAccountIdFilter);
       state = AsyncData(transactions);

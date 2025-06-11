@@ -1,19 +1,14 @@
 import 'package:fmapp/src/core/data/isar_service.dart';
 import 'package:fmapp/src/features/financial_accounts/data/models/financial_account.dart';
-// Assuming supabaseClientProvider is defined in main.dart or similar
 import 'package:fmapp/main.dart' show supabaseClientProvider;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:isar/isar.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
 
-// Provider for FinancialAccountRepository
 final financialAccountRepositoryProvider = Provider<FinancialAccountRepository>((ref) {
   final isar = ref.watch(isarInstanceProvider);
   final supabaseClient = ref.watch(supabaseClientProvider);
-  // We need the current user's ID for most operations.
-  // It's better if this is passed into methods or obtained from a reliable auth state provider.
-  // For now, accessing directly, but this has limitations (e.g. in background tasks if auth state changes).
   return FinancialAccountRepository(isar, supabaseClient, const Uuid());
 });
 
@@ -26,8 +21,6 @@ class FinancialAccountRepository {
 
   String? get _currentUserId => _supabase.auth.currentUser?.id;
 
-  // --- Local Isar Operations ---
-
   Stream<List<FinancialAccount>> watchFinancialAccountsLocal({bool includeArchived = false}) {
     final userId = _currentUserId;
     if (userId == null) return Stream.value([]);
@@ -39,6 +32,21 @@ class FinancialAccountRepository {
     }
     return query.watch(fireImmediately: true);
   }
+
+  // New method to watch a single financial account by its supabaseId
+  Stream<FinancialAccount?> watchFinancialAccountBySupabaseIdLocal(String supabaseId) {
+    final userId = _currentUserId;
+    if (userId == null) return Stream.value(null); // Or handle error appropriately
+    // Isar's watch object by ID is for Isar ID. For supabaseId, we watch a query.
+    return _isar.financialAccounts
+        .filter()
+        .supabaseIdEqualTo(supabaseId)
+        .and() // Ensure it also matches the current user for security, though supabaseId should be unique.
+        .userIdEqualTo(userId)
+        .watch(fireImmediately: true)
+        .map((results) => results.isNotEmpty ? results.first : null); // Take first or null
+  }
+
 
   Future<List<FinancialAccount>> getFinancialAccountsLocal({bool includeArchived = false}) async {
     final userId = _currentUserId;
@@ -53,7 +61,9 @@ class FinancialAccountRepository {
   }
 
   Future<FinancialAccount?> getFinancialAccountBySupabaseIdLocal(String supabaseId) async {
-    return _isar.financialAccounts.filter().supabaseIdEqualTo(supabaseId).findFirst();
+    final userId = _currentUserId;
+    if (userId == null) return null;
+    return _isar.financialAccounts.filter().supabaseIdEqualTo(supabaseId).and().userIdEqualTo(userId).findFirst();
   }
 
   Future<Id> saveFinancialAccountLocal(FinancialAccount account) async {
@@ -63,15 +73,10 @@ class FinancialAccountRepository {
   }
 
   Future<bool> deleteFinancialAccountLocal(Id isarId) async {
-    // Note: Consider implications: what happens to transactions linked to this account?
-    // PRD doesn't specify cascading deletes for transactions from account deletion.
-    // For now, direct deletion.
     return await _isar.writeTxn(() async {
       return await _isar.financialAccounts.delete(isarId);
     });
   }
-
-  // --- Supabase Operations ---
 
   Future<FinancialAccount> addFinancialAccountRemote(FinancialAccount account) async {
     final userId = _currentUserId;
@@ -107,7 +112,6 @@ class FinancialAccountRepository {
   }
 
   Future<void> deleteFinancialAccountRemote(String supabaseId) async {
-    // See note on deleteFinancialAccountLocal regarding transactions.
     final userId = _currentUserId;
     if (userId == null) throw Exception("User not authenticated to delete account remotely.");
 
@@ -126,12 +130,8 @@ class FinancialAccountRepository {
         .from('financial_accounts')
         .select()
         .eq('user_id', userId);
-        // .order('account_name', ascending: true); // Optional ordering
-
     return response.map((data) => FinancialAccount.fromMap(data)).toList();
   }
-
-  // --- Combined Operations with Basic Sync Logic ---
 
   Future<FinancialAccount> addFinancialAccount(FinancialAccount account) async {
     final userId = _currentUserId;
@@ -159,7 +159,6 @@ class FinancialAccountRepository {
     }
      if (account.userId != userId) throw Exception("Cannot update account not belonging to current user.");
 
-
     FinancialAccount updatedRemoteAccount;
     try {
       updatedRemoteAccount = await updateFinancialAccountRemote(account);
@@ -171,13 +170,10 @@ class FinancialAccountRepository {
     return updatedRemoteAccount;
   }
 
-  /// Archives/Restores a financial account by toggling its 'isArchived' status.
   Future<FinancialAccount> toggleArchiveFinancialAccount(FinancialAccount account) async {
     final updatedAccount = account.copyWith(isArchived: !account.isArchived, updatedAt: DateTime.now());
-    // This is an update operation.
     return await updateFinancialAccount(updatedAccount);
   }
-
 
   Future<void> deleteFinancialAccount(String supabaseId, Id isarId) async {
     final userId = _currentUserId;

@@ -6,7 +6,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fmapp/src/features/auth/data/models/user_profile.dart';
 import 'package:fmapp/src/features/sim_cards/data/models/sim_card.dart';
 import 'package:fmapp/src/features/financial_accounts/data/models/financial_account.dart';
-import 'package:fmapp/src/features/transactions/data/models/transaction.dart'; // Added Transaction schema import
+import 'package:fmapp/src/features/transactions/data/models/transaction.dart';
+import 'package:fmapp/src/features/friends/data/models/friend.dart';
+import 'package:fmapp/src/features/loans/data/models/loan_debt.dart'; // Added LoanDebt schema import
 
 final isarInstanceProvider = Provider<Isar>((ref) {
   throw Exception("Isar instance not initialized. Ensure IsarService.init() is called at startup and isarInstanceProvider is overridden.");
@@ -26,7 +28,9 @@ class IsarService {
           UserProfileSchema,
           SimCardSchema,
           FinancialAccountSchema,
-          TransactionSchema, // Added TransactionSchema to the list
+          TransactionSchema,
+          FriendSchema,
+          LoanDebtSchema, // Added LoanDebtSchema to the list
         ],
         directory: dir.path,
         name: 'fmappLocalDB',
